@@ -25,6 +25,7 @@
 ;;; Code:
 
 (require 'lsp-mode)
+(require 'lsp-metals-ui-treeview)
 
 (defgroup lsp-metals nil
   "LSP support for Scala, using Metals."
@@ -77,6 +78,13 @@ more customizations like using environment variables."
   :type '(string)
   :group 'lsp-metals
   :package-version '(lsp-mode . "6.1"))
+
+(defcustom lsp-metals-enable-treeview-provider nil
+  "Enable metals treeview provider supporting project file explorer,
+library explorer and compilation views."
+  :type '(boolean)
+  :group 'lsp-metals
+  :package-version '(lsp-mode . "6.2"))
 
 
 (lsp-register-custom-settings
@@ -160,10 +168,16 @@ Should be ignored if there is no open doctor window."
                   :notification-handlers (ht ("metals/executeClientCommand" #'lsp-metals--execute-client-command)
                                              ("metals/treeViewDidChange" #'ignore))
 		  :server-id 'metals
+                  :custom-capabilities
+                  `(experimental . ((treeViewProvider . ,(if lsp-metals-enable-treeview-provider
+                                                             t
+                                                           :json-false))))
+                  :notification-handlers lsp--default-metals-notification-handlers
                   :initialized-fn (lambda (workspace)
                                     (with-lsp-workspace workspace
                                       (lsp--set-configuration
                                        (lsp-configuration-section "metals"))))))
+
 
 (provide 'lsp-metals)
 ;;; lsp-metals.el ends here

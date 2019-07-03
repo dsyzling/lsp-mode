@@ -988,6 +988,8 @@ INHERIT-INPUT-METHOD will be proxied to `completing-read' without changes."
   (server-id)
   ;; defines whether the client supports multi root workspaces.
   (multi-root)
+  ;; Provides support for registering to use LSP Server specific capabilities.
+  (custom-capabilities)
   ;; Initialization options or a function that returns initialization options.
   (initialization-options)
   ;; Function which returns the folders that are considered to be not projects but library files.
@@ -2348,7 +2350,7 @@ disappearing, unset all the variables related to it."
     (unless (lsp-workspaces)
       (lsp--managed-mode -1))))
 
-(defun lsp--client-capabilities ()
+(defun lsp--client-capabilities (&optional custom-capabilities)
   "Return the client capabilites."
   `((workspace . ((workspaceEdit . ((documentChanges . t)
                                     (resourceOperations . ["create" "rename" "delete"])))
@@ -2358,6 +2360,7 @@ disappearing, unset all the variables related to it."
                   (didChangeWatchedFiles . ((dynamicRegistration . t)))
                   (workspaceFolders . t)
                   (configuration . t)))
+    ,custom-capabilities
     (textDocument . ((declaration . ((linkSupport . t)))
                      (definition . ((linkSupport . t)))
                      (implementation . ((linkSupport . t)))
@@ -4955,7 +4958,8 @@ SESSION is the active session."
                           (list :processId (emacs-pid)
                                 :rootPath (lsp-file-local-name (expand-file-name root))
                                 :rootUri (lsp--path-to-uri root)
-                                :capabilities (lsp--client-capabilities)
+                                :capabilities (lsp--client-capabilities
+                                               (lsp--client-custom-capabilities client))
                                 :initializationOptions initialization-options)
                           (when (lsp--client-multi-root client)
                             (->> workspace-folders
