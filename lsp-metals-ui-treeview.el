@@ -24,6 +24,21 @@
 ;; compilation tree etc.
 ;; See the Metals treeview provider spec for further details:
 ;;  https://scalameta.org/metals/docs/editors/tree-view-protocol.html
+;;
+;; Current treeview interaction is:
+;;   tab  key to expand/collapse nodes which is default treemacs behaviour.
+;;   ret  will execute the command associated with the current node via Metals.
+;;        Note you need -Dmetals.execute-client-command enabled for this to work
+;;        and may require you to upgrade Metals post 0.7 for Emacs.
+;;
+;;   mouse left double click - will execute the command on a node.
+;;
+;; Metals allows classes to be expanded and the action executed on the same
+;; node - metals.goto (goto definition) we can't therefore use return to
+;; expand/collapse and execute actions. The existing implementation provides
+;; a simple starting point to test the treeview with metals and we can evolve
+;; to a Hydra like interface to provide a richer keyboard experience in future.
+;;
 
 ;;; Code:
 
@@ -66,6 +81,10 @@ invoke async calls to the lsp server.")
           (file-name-nondirectory
            (directory-file-name (lsp--workspace-root workspace)))))
 
+(defun lsp--metals-treemacs-path (node-uri)
+  "Create a treemacs path given the node-uri which is used as the node key."
+  `(:custom Build ,node-uri))
+
 (defun lsp--metals-init-views (workspace params)
   (lsp-log "Initialising metals views for the first time %s" (lsp--workspace-root workspace))
   (let ((state (make-lsp--metals-treeview-data
@@ -89,18 +108,16 @@ invoke async calls to the lsp server.")
   (let ((treeview-buffer-name (lsp--metals-treeview-buffer-name workspace
                                                                 (gethash "viewId" node))))
     (with-current-buffer treeview-buffer-name
-      (lsp-log "looking for %s in treeview buffer %s"
-               (gethash "nodeUri" node)
-               treeview-buffer-name)
-      (if (treemacs-find-in-dom (gethash "nodeUri" node))
-          (lsp-log "found node in dom")
-        (lsp-log "Failed to find node in dom"))
-      
-        ;; (treemacs-button-put (treemacs-find-in-dom (gethash "nodeUri" node))
-        ;;                      :label
-        ;;                      (gethash "label" node))
-        
-        )))
+      (-if-let (tree-node (treemacs-find-node (lsp--metals-treemacs-path
+                                               (gethash "nodeUri" node))))
+          (progn
+            ;; replace label in our node attached to the tree node.
+            (ht-set (treemacs-button-get tree-node :node)
+                    "label"
+                    (ht-get node "label"))
+            ;; update treeview ui - need to trigger update of parent node.
+            (treemacs-do-update-node (treemacs-parent-of tree-node) t))
+        (lsp-log "Failed to find node in dom")))))
 
 (defun lsp--metals-treeview-changed (workspace params treeview-state)
   (lsp-log "treeview changed\n%s" (json-encode params))
@@ -127,34 +144,30 @@ workspace of the project."
       (lsp--metals-treeview-changed workspace params state))
     (lsp-log "state after setting %s" (lsp--metals-get-treeview-data workspace))))
 
-;; TODO
-;; consider removing and using the synchronous call.
-;;
-;; (defun lsp--metals-send-treeview-children (view-id &optional node-uri)
+
+;; (defun lsp--metals-send-treeview-children-sync (view-id &optional node-uri)
 ;;   "Query children in the view given by VIEW-ID.
 ;; An optional NODE-URI can be used to query children of a specific node
-;; within the view. This call is asynchronous, the metals method sent
-;; in this async request is metals/treeViewChildren"
+;; within the view. This call is synchronous and will return the response
+;; from the call to metas/treeViewChildren. Under the hood lsp-request will
+;; send the request asynchronously and wait for the response."
 ;;   (let* ((view-param `(:viewId ,view-id))
 ;;          (params (if node-uri
 ;;                      (append view-param `(:nodeUri ,node-uri))
 ;;                    view-param)))
-;;     (lsp-request-async "metals/treeViewChildren" params
-;;                         (lambda (response)
-;;                           (lsp-log "Return from metals/treeViewChildren")
-;;                           (lsp-log (json-encode response))))))
+;;     (lsp-request "metals/treeViewChildren" params)))
 
-(defun lsp--metals-send-treeview-children-sync (view-id &optional node-uri)
+(defun lsp--metals-send-treeview-children (view-id &optional node-uri)
   "Query children in the view given by VIEW-ID.
 An optional NODE-URI can be used to query children of a specific node
 within the view. This call is synchronous and will return the response
 from the call to metas/treeViewChildren. Under the hood lsp-request will
 send the request asynchronously and wait for the response."
-  (let* ((view-param `(:viewId ,view-id))
-         (params (if node-uri
-                     (append view-param `(:nodeUri ,node-uri))
-                   view-param)))
-    (lsp-request "metals/treeViewChildren" params)))
+  (lsp-log "Sending metals/treeViewChildren")
+  (lsp-request "metals/treeViewChildren"
+               (append `(:viewId ,view-id)
+                       (if node-uri `(:nodeUri ,node-uri) nil))))
+
 
 (defun lsp--metals-send-treeview-visibility-did-change (workspace view-id visible)
   "Send metals/treeViewVisibilityDidChange to inform metals when views
@@ -166,13 +179,33 @@ are shown/hidden within the editor."
                            (lambda (response)
                              (lsp-log (json-encode response)))))))
 
-(defun lsp--metals-treeview-get-children (view-id &optional node-uri)
-  (lsp-log "**in lsp--metals-treeview-get-children")
-  (with-lsp-workspace lsp--metals-treeview-current-workspace
-    (let ((response (lsp--metals-send-treeview-children-sync view-id node-uri)))
-      ;; return nodes element and convert from vector to list.
-      (append (gethash "nodes" response) nil))))
+(defun lsp--metals-send-treeview-node-collapse-did-change (workspace view-id node-uri collapsed?)
+  "Send metals/treeViewNodeCollapseDidChange to inform Metals when a
+treeview node has collapsed or expanded."
+  (lsp-log "sending metals/treeViewNodeCollapseDidChange viewId %s nodeUri %s collapsed? %s"
+           view-id node-uri collapsed?)
+  (let ((params (list :viewId view-id
+                      :nodeUri node-uri
+                      :collapsed (if collapsed?
+                                     t
+                                   json-false))))
+    (with-lsp-workspace workspace
+      (lsp-request-async "metals/treeViewNodeCollapseDidChange" params
+                         (lambda (response)
+                           (lsp-log "metals/treeViewNodeCollapseDidChange response:\n %s"
+                                    (json-encode response)))))))
 
+(defun lsp--metals-treeview-get-children (view-id &optional node-uri)
+  (with-lsp-workspace lsp--metals-treeview-current-workspace
+    ;; return nodes element and convert from vector to list.
+    (let ((children (ht-get (lsp--metals-send-treeview-children view-id node-uri) "nodes")))
+      (lsp-log "Children returned:\n%s " (json-encode children))
+      (append children nil))))
+
+(defun lsp--metals-treeview-get-children-current-node (&rest _)
+  (let ((metals-node (treemacs-button-get (treemacs-node-at-point) :node)))
+    (lsp--metals-treeview-get-children (ht-get metals-node "viewId")
+                                       (ht-get metals-node "nodeUri"))))
 ;;
 ;; UI tree view using treemacs
 ;;
@@ -188,14 +221,9 @@ are shown/hidden within the editor."
       treemacs-icon-metals-node-closed
     (treemacs-get-icon-value 'root nil "Default")))
 
-(defun lsp--metals-treeview-query-children (&rest _)
-  (lsp-log (json-encode (treemacs-button-get (treemacs-node-at-point) :node)))
-  (let* ((node (treemacs-button-get (treemacs-node-at-point) :node))
-         (view-id  (gethash "viewId" node))
-         (node-uri (gethash "nodeUri" node)))
-    (with-lsp-workspace lsp--metals-treeview-current-workspace
-      (lsp--metals-treeview-get-children view-id node-uri))))
 
+;;TODO - refactor this to call new lsp-metals send execute function.
+;; Check if node has command property and send execute to metals.
 (defun lsp--metals-treeview-exec-node-action (&rest _)
   "Execute the action associated with the treeview node."
   (let* ((node (treemacs-button-get (treemacs-current-button) :node)))
@@ -210,18 +238,62 @@ are shown/hidden within the editor."
                    (interactive)
                    (lsp--metals-treeview-exec-node-action args)))
 
-(defun lsp--metals-toggle-metals-node (&rest _)
-  (let ((state (treemacs-button-get (treemacs-current-button) :state)))
-    (if (eq treemacs-metals-node-closed-state state)
-        (treemacs-expand-metals-node))
-    (treemacs-collapse-metals-node)))
+
+(defun lsp--metals-on-node-collapsed (metals-node collapsed?)
+  "Send metals/treeViewNodeCollapseDidChange to inform Metals
+that the node has been collapsed or expanded."
+  (lsp--metals-send-treeview-node-collapse-did-change lsp--metals-treeview-current-workspace
+                                                      lsp--metals-view-id
+                                                      (ht-get metals-node "nodeUri")
+                                                      collapsed?))
+
+;; (defun lsp--metals-toggle-node (&optional root &rest _)
+;;   "Toggle collapse/expand state for metals root and
+;; expandable nodes."
+;;   (let* ((current-node (treemacs-current-button))
+;;          (state (treemacs-button-get current-node :state)))
+;;     (pcase state
+;;       (`treemacs-metals-node-closed-state
+;;        (lsp--metals-on-node-collapsed
+;;         (treemacs-button-get (treemacs-current-button) :node) nil)
+;;        (treemacs-expand-metals-node)
+;;        ;;(lsp--metals-on-expand-node current-node)
+;;        )
+      
+;;       (`treemacs-metals-node-open-state
+       
+;;        (lsp--metals-on-node-collapsed
+;;         (treemacs-button-get (treemacs-current-button) :node) t)
+;;        (treemacs-collapse-metals-node)
+;;        ;;(lsp--metals-on-collapse-node current-node)
+;;        )
+      
+;;       (`treemacs-metals-root-closed-state
+;;        (treemacs-expand-metals-root)
+;;        (lsp--metals-on-node-collapsed
+;;         (treemacs-button-get (treemacs-current-button) :node) nil)
+;;        ;;(lsp--metals-on-expand-node current-node)
+;;        )
+      
+;;       (`treemacs-metals-root-open-state
+;;        (treemacs-collapse-metals-root)
+;;        (lsp--metals-on-node-collapsed
+;;         (treemacs-button-get (treemacs-current-button) :node) t)
+;;        ;;(lsp--metals-on-collapse-node current-node)
+;;        ))))
 
 (treemacs-define-expandable-node metals-node
   :icon-open (treemacs-as-icon "- " 'face 'font-lock-string-face)
   :icon-closed (treemacs-as-icon "+ " 'face 'font-lock-string-face)
-  :query-function (lsp--metals-treeview-query-children)
+  :query-function (lsp--metals-treeview-get-children-current-node)
 
-  ;;:ret-action 'lsp--metals-toggle-metals-node
+  :ret-action 'lsp--metals-treeview-exec-node-action
+  ;;:ret-action 'lsp--metals-toggle-node
+  
+  :after-expand (lsp--metals-on-node-collapsed
+                 (treemacs-button-get node :node) nil)
+  :after-collapse (lsp--metals-on-node-collapsed
+                   (treemacs-button-get node :node) t)
   
   :render-action
   (treemacs-render-node
@@ -231,12 +303,14 @@ are shown/hidden within the editor."
    ;;:state (lsp--metals-treeview-state item)
    :face 'font-lock-string-face
    :key-form (gethash "nodeUri" item)
-   :more-properties (:node item)))
+   :more-properties (:node item :eldoc (gethash "tooltip" item))))
 
 (treemacs-define-expandable-node metals-root
   :icon-open (treemacs-as-icon "- " 'face 'font-lock-string-face)
   :icon-closed (treemacs-as-icon "+ " 'face 'font-lock-string-face)
   :query-function (lsp--metals-treeview-get-children lsp--metals-view-id)
+
+  :ret-action 'lsp--metals-treeview-exec-node-action
   
   :render-action
   (treemacs-render-node
@@ -245,7 +319,7 @@ are shown/hidden within the editor."
    :state (lsp--metals-treeview-state item)
    :face 'font-lock-keyword-face
    :key-form (gethash "nodeUri" item)
-   :more-properties (:node item))
+   :more-properties (:node item :eldoc (gethash "tooltip" item)))
   :top-level-marker t
   :root-label (lsp--metals-view-name lsp--metals-view-id)
   :root-face 'font-lock-type-face
@@ -319,12 +393,6 @@ positioned as a side window by POSITION and is of the form
 ;;   (switch-to-buffer "build.sbt")
 ;;   (vectorp (lsp--metals-treeview-get-children "metalsBuild")))
 
-
-
-;; (progn
-;;   (switch-to-buffer "build.sbt")
-;;   (setq method-reqs lsp-method-requirements))
-
 ;; (progn
 ;;   (switch-to-buffer "build.sbt")
 ;;   (mapc (lambda (workspace)
@@ -337,14 +405,6 @@ positioned as a side window by POSITION and is of the form
 ;; (progn
 ;;   (switch-to-buffer "build.sbt")
 ;;   (lsp--metals-treeview-get-children "metalsBuild"))
-
-;; (progn
-;;   (switch-to-buffer "build.sbt")
-;;   (lsp--metals-send-treeview-children "metalsBuild"))
-
-;; (progn
-;;   (switch-to-buffer "build.sbt")
-;;   (lsp--metals-send-treeview-children "metalsCompile"))
 
 ;; sync
 ;; (progn
@@ -367,6 +427,29 @@ positioned as a side window by POSITION and is of the form
 ;;   (let ((response (lsp--metals-treeview-get-children "metalsBuild" "projects:")))
 ;;     (lsp-log "*** response from synchronous call")
 ;;     (lsp-log (json-encode response))))
+
+;; Debug helpers to track down issues with treemacs and aid development.
+(defun lsp-metals-treemacs--debug-node ()
+  (interactive)
+  (-let [node (treemacs-node-at-point)]
+    (message
+     "Label: %s
+Depth: %s
+Key: %s
+Path: %s
+State: %s
+Parent: %s
+eldoc: %s
+Metals Item: %s"
+     (treemacs--get-label-of node)
+     (treemacs-button-get node :depth)
+     (treemacs-button-get node :key)
+     (treemacs-button-get node :path)
+     (treemacs-button-get node :state)
+     (-some-> node (treemacs-button-get :parent) (treemacs--get-label-of))
+     (treemacs-button-get node :eldoc)
+     (-some-> node (treemacs-button-get :node)))))
+(global-set-key (kbd "C-x C-ö") #'treemacs-mu4e-debug-node)
 
 
 (provide 'lsp-metals-ui-treeview)
