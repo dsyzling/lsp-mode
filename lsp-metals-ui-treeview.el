@@ -61,9 +61,6 @@ invoke async calls to the lsp server.")
 (defvar-local lsp--metals-view-id nil
   "Metals treeview id associated with the treeview buffer.")
 
-(defconst lsp--default-metals-notification-handlers
-  (ht ("metals/treeViewDidChange" #'lsp--metals-treeview-did-change)))
-
 (defun lsp--metals-get-treeview-data (workspace)
   (gethash "metals-treeview" (lsp--workspace-metadata workspace)))
 

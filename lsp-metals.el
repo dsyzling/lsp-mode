@@ -166,13 +166,12 @@ Should be ignored if there is no open doctor window."
                   :major-modes '(scala-mode)
                   :priority -1
                   :notification-handlers (ht ("metals/executeClientCommand" #'lsp-metals--execute-client-command)
-                                             ("metals/treeViewDidChange" #'ignore))
+                                             ("metals/treeViewDidChange" #'lsp--metals-treeview-did-change))
 		  :server-id 'metals
                   :custom-capabilities
                   `(experimental . ((treeViewProvider . ,(if lsp-metals-enable-treeview-provider
                                                              t
                                                            :json-false))))
-                  :notification-handlers lsp--default-metals-notification-handlers
                   :initialized-fn (lambda (workspace)
                                     (with-lsp-workspace workspace
                                       (lsp--set-configuration
