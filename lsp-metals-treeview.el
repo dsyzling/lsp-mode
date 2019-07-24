@@ -1,4 +1,4 @@
-;;; lsp-metals-ui-treeview.el --- Scala Client settings             -*- lexical-binding: t; -*-
+;;; lsp-metals-treeview.el --- Scala Client settings             -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2019 Darren Syzling <dsyzling@gmail.com>
 
@@ -560,8 +560,8 @@ Metals Item: %s"
 (global-set-key (kbd "C-x C-ö") #'treemacs-mu4e-debug-node)
 
 
-(provide 'lsp-metals-ui-treeview)
-;;; lsp-metals-ui-treeview.el ends here
+(provide 'lsp-metals-treeview)
+;;; lsp-metals-treeview.el ends here
 
 ;; Local Variables:
 ;; flycheck-disabled-checkers: (emacs-lisp-checkdoc)

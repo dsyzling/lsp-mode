@@ -25,7 +25,7 @@
 ;;; Code:
 
 (require 'lsp-mode)
-(require 'lsp-metals-ui-treeview)
+(require 'lsp-metals-treeview)
 
 (defgroup lsp-metals nil
   "LSP support for Scala, using Metals."
