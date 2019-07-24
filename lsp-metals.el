@@ -150,7 +150,7 @@ Should be ignored if there is no open doctor window."
         (funcall xref-show-definitions-function
           (-const xrefs)
           `((window . ,(selected-window)))))
-      (xref--show-xrefs xrefs nil))))
+      (xref--show-xrefs xrefs `window))))
 
 (defun lsp-metals--execute-client-command (workspace params)
   "Handle the metals/executeClientCommand extension notification."
