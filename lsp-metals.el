@@ -169,7 +169,7 @@ Should be ignored if there is no open doctor window."
                                              ("metals/treeViewDidChange" #'lsp--metals-treeview-did-change))
 		  :server-id 'metals
                   :custom-capabilities
-                  `(experimental . ((treeViewProvider . ,(if lsp-metals-enable-treeview-provider
+                  `(experimental . ((treeViewProvider . ,(if lsp-metals-treeview-enable
                                                              t
                                                            :json-false))))
                   :initialized-fn (lambda (workspace)
