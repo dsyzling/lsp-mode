@@ -288,7 +288,8 @@ us a new set of views."
             (treemacs-do-update-node (treemacs-parent-of tree-node) t)
             ;;(treemacs-do-update-node tree-node nil)
             )
-        (lsp--metals-treeview-log "Failed to find node in dom")))))
+        (lsp--metals-treeview-log "Failed to find node in treeview")))))
+
 
 (defun lsp--metals-treeview-changed (workspace params)
   "The treeview nodes have changed, update our treemacs tree."
@@ -428,41 +429,6 @@ collapsed or expanded."
                                                       lsp--metals-view-id
                                                       (ht-get metals-node "nodeUri")
                                                       collapsed?))
-
-;; (defun lsp--metals-toggle-node (&optional root &rest _)
-;;   "Toggle collapse/expand state for metals root and
-;; expandable nodes."
-;;   (let* ((current-node (treemacs-current-button))
-;;          (state (treemacs-button-get current-node :state)))
-;;     (pcase state
-;;       (`treemacs-metals-node-closed-state
-;;        (lsp--metals-on-node-collapsed
-;;         (treemacs-button-get (treemacs-current-button) :node) nil)
-;;        (treemacs-expand-metals-node)
-;;        ;;(lsp--metals-on-expand-node current-node)
-;;        )
-      
-;;       (`treemacs-metals-node-open-state
-       
-;;        (lsp--metals-on-node-collapsed
-;;         (treemacs-button-get (treemacs-current-button) :node) t)
-;;        (treemacs-collapse-metals-node)
-;;        ;;(lsp--metals-on-collapse-node current-node)
-;;        )
-      
-;;       (`treemacs-metals-root-closed-state
-;;        (treemacs-expand-metals-root)
-;;        (lsp--metals-on-node-collapsed
-;;         (treemacs-button-get (treemacs-current-button) :node) nil)
-;;        ;;(lsp--metals-on-expand-node current-node)
-;;        )
-      
-;;       (`treemacs-metals-root-open-state
-;;        (treemacs-collapse-metals-root)
-;;        (lsp--metals-on-node-collapsed
-;;         (treemacs-button-get (treemacs-current-button) :node) t)
-;;        ;;(lsp--metals-on-collapse-node current-node)
-;;        ))))
 
 ;;
 ;; Expandable node definition in the treemacs tree.
