@@ -73,6 +73,11 @@ invoke async calls to the lsp server.")
 (defvar-local lsp--metals-view-id nil
   "Metals treeview id associated with the treeview buffer.")
 
+;; Key set on the root of Metals tree - path will be of the form
+;; '(:custom MetalsTree) - initialise our root node and we use this
+;; to find the root node and refresh the tree.
+(defconst lsp--metals-treeview-root-key 'MetalsTree)
+
 (defun lsp--metals-treeview-log (format &rest args)
   "Log treeview tracing/debug messages to the lsp-log"
   (when lsp-metals-treeview-logging
@@ -163,10 +168,6 @@ will be used."
   :group 'lsp-metals-treeview)
 
 
-(defun lsp--metals-treemacs-path (node-uri)
-  "Create a treemacs path given the NODE-URI which is used as the node key."
-  `(:custom Build ,node-uri))
-
 (defun lsp--metals-show-view (workspace view-id position)
   "Show or create the side window and treeview for the Metals VIEW-ID
 within the current WORKSPACE.  The window will be positioned as a side
@@ -180,7 +181,8 @@ window by POSITION and is of the form '((side left))."
         (with-selected-window (display-buffer-in-side-window buffer position)
           ;; update the root of the tree with the view.
           (lsp--metals-treeview-log "Refreshing tree %s" view-id)
-          (treemacs-update-node '(:custom Build) t))
+          (treemacs-update-node `(:custom ,lsp--metals-treeview-root-key) t))
+          
       (let* ((buffer (get-buffer-create buffer-name))
              (window (display-buffer-in-side-window buffer position)))
 
@@ -272,22 +274,49 @@ us a new set of views."
                                      (and state (lsp--metals-treeview-data-views state))
                                      0))))
 
+;;
+;; Treemacs doesn't support a unique key - :-key-form isn't actually defined as
+;; being unique and you cannot search by this key - only by path. Since Metals
+;; sends us nodeUri unique keys we need someway of mapping nodeUris to
+;; treemacs paths - so we can use treemacs-find-node.
+;;
+(defvar-local lsp--metals-treemacs-node-index (make-hash-table :test 'equal))
+
+(defun lsp--metals-treeview-cache-add-nodes (metals-nodes current-treemacs-node)
+  "Build an index of treemacs nodes nodeUri -> treemacs path. We can use this
+to find nodes within the tree based on nodeUri which Metals will send us."
+  (let ((parent-path (treemacs-button-get current-treemacs-node :path)))
+    (-map (lambda (metals-node)
+            (let ((node-uri (ht-get metals-node "nodeUri")))
+              (ht-set lsp--metals-treemacs-node-index
+                      node-uri
+                      (append parent-path (list node-uri)))))
+          metals-nodes)))
+
+(defun lsp--metals-treeview-find-node (node-uri)
+  "Find treemacs node based on node-uri via our local index."
+  (when-let ((path (ht-get lsp--metals-treemacs-node-index node-uri)))
+    (treemacs-find-node path)))
+
 (defun lsp--metals-treeview-update-node (workspace node)
   (lsp--metals-treeview-log "in lsp--metals-treeview-update-node %s" (ht-get node "nodeUri"))
-  (let ((treeview-buffer-name (lsp--metals-treeview-buffer-name workspace
-                                                                (ht-get node "viewId"))))
+   (let* ((treeview-buffer-name (lsp--metals-treeview-buffer-name workspace
+                                                                 (ht-get node "viewId")))
+         (node-uri (ht-get node "nodeUri")))
     (with-current-buffer treeview-buffer-name
-      (-if-let (tree-node (treemacs-find-node (lsp--metals-treemacs-path
-                                               (ht-get node "nodeUri"))))
+      (-if-let (tree-node (lsp--metals-treeview-find-node node-uri))
           (progn
             ;; replace label in our node attached to the tree node.
             (ht-set (treemacs-button-get tree-node :node)
                     "label"
                     (ht-get node "label"))
-            ;; update treeview ui - need to trigger update of parent node.
-            (treemacs-do-update-node (treemacs-parent-of tree-node) t)
-            ;;(treemacs-do-update-node tree-node nil)
-            )
+            
+            ;; Currently the only way to re-render the label of an item is
+            ;; for the parent to call render-node on its children. So
+            ;; we update the parent of the node we're changing.
+            ;; An enhancement to treemacs is in the works where  the label
+            ;; can be updated directly.
+            (treemacs-update-node (treemacs-parent-of tree-node) nil))
         (lsp--metals-treeview-log "Failed to find node in treeview")))))
 
 
@@ -315,10 +344,11 @@ workspace of the project."
   (lsp--metals-treeview-log "In lsp--metals-treeview-did-change %s\n%s"
                             (lsp--workspace-root workspace)
                             (json-encode params))
-  (save-excursion
-    (if (lsp--metals-views-update-message? params)
-        (lsp--metals-treeview-refresh workspace params)
-      (lsp--metals-treeview-changed workspace params))))
+  
+  (if (lsp--metals-views-update-message? params)
+      (lsp--metals-treeview-refresh workspace params)
+    (lsp--metals-treeview-changed workspace params)))
+
 
 (defun lsp--metals-send-treeview-children (view-id &optional node-uri)
   "Query children in the view given by VIEW-ID.
@@ -361,7 +391,9 @@ collapsed or expanded based on the boolean COLLAPSED? either t or nil."
       (lsp-request-async "metals/treeViewNodeCollapseDidChange" params
                          (lambda (response)
                            (lsp--metals-treeview-log "metals/treeViewNodeCollapseDidChange response:\n %s"
-                                                     (json-encode response)))))))
+                                                     (json-encode response)))
+                         :mode 'detached))))
+
 
 (defun lsp--metals-treeview-get-children (view-id &optional node-uri)
   "Retrieve children of the view given by the VIEW-ID and optionally children
@@ -370,9 +402,12 @@ will be returned for the view. Returns a list of nodes with values converted
 from json to hash tables."
   (with-lsp-workspace lsp--metals-treeview-current-workspace
     ;; return nodes element and convert from vector to list.
-    (let ((children (ht-get (lsp--metals-send-treeview-children view-id node-uri) "nodes")))
+    (let ((children (append (ht-get (lsp--metals-send-treeview-children view-id node-uri) "nodes")
+                            nil)))
       (lsp--metals-treeview-log "Children returned:\n%s " (json-encode children))
-      (append children nil))))
+      
+      (lsp--metals-treeview-cache-add-nodes children (treemacs-node-at-point))
+      children)))
 
 (defun lsp--metals-treeview-get-children-current-node (&rest _)
   "Retrieve children of the currently selected node in the treeview - see
@@ -488,7 +523,7 @@ collapsed or expanded."
   :top-level-marker t
   :root-label (lsp--metals-view-name lsp--metals-view-id)
   :root-face 'font-lock-type-face
-  :root-key-form 'Build)
+  :root-key-form lsp--metals-treeview-root-key)
 
 (defun lsp-metals-treeview (&optional workspace)
   "Display the Metals treeview window for the WORKSPACE (optional).  If
