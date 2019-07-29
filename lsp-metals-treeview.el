@@ -46,6 +46,8 @@
 (require 'ht)
 (require 'json)
 (require 'dash)
+(require 'f)
+(require 'pcase)
 (require 'treemacs)
 
 (defcustom lsp-metals-treeview-enable t
@@ -58,7 +60,7 @@
   :group 'lsp-metals-treeview
   :type 'boolean)
 
-(defcustom lsp-metals-treeview-logging t
+(defcustom lsp-metals-treeview-logging nil
   "If non nil log treeview trace/debug messages to the lsp-log for debugging."
   :group 'lsp-metals-treeview
   :type 'boolean)
@@ -77,6 +79,20 @@ invoke async calls to the lsp server.")
 ;; '(:custom MetalsTree) - initialise our root node and we use this
 ;; to find the root node and refresh the tree.
 (defconst lsp--metals-treeview-root-key 'MetalsTree)
+
+(defconst lsp--metals-treeview-icon-dir "metals-icons"
+  "Directory containing Metals treeview icon theme -
+relative to lsp-mode")
+
+;; Root directory of our lisp files so that we can find icons
+;; relative to installation.
+(defconst lsp--metals-treeview-dir
+  (-> (if load-file-name
+          (file-name-directory load-file-name)
+        default-directory)
+      (expand-file-name))
+  "The directory lsp-metals-treeview.el is stored in.")
+
 
 (defun lsp--metals-treeview-log (format &rest args)
   "Log treeview tracing/debug messages to the lsp-log"
@@ -424,10 +440,39 @@ LSP--METALS-TREEVIEW-GET-CHILDREN."
       treemacs-metals-node-closed-state
     treemacs-metals-leaf-state))
 
-(defun lsp--metals-treeview-icon (item)
-  (if (ht-get item "collapseState")
-      treemacs-icon-metals-node-closed
-    (treemacs-get-icon-value 'root nil "Default")))
+;; used for render children 
+(defun lsp--metals-treeview-metals-node-icon (metals-node)
+  "Return icon for Metals node - which is a hash table of elements."
+  (-if-let (icon (ht-get metals-node "icon"))
+      (treemacs-get-icon-value icon nil "Metals")
+    (if (ht-get metals-node "collapseState")
+        (treemacs-as-icon "+ " 'face 'font-lock-string-face)
+      ;; leaf node without an icon
+      (treemacs-as-icon " " 'face 'font-lock-string-face))))
+
+; expandable nodes - need to return dynamic open-form and close-form.
+(defun lsp--metals-treeview-icon (node open-form?)
+  "Return icon for Metals node - which is a hash table of elements."
+  ;; root node?
+  (if (and node (equal nil (treemacs-button-get node :parent)))
+      (treemacs-get-icon-value 'root nil "Metals")
+    (progn
+      (let ((metals-node (treemacs-button-get node :node)))
+        (-if-let (icon (ht-get metals-node "icon"))
+            (treemacs-get-icon-value icon nil "Metals")
+          (if (ht-get metals-node "collapseState")
+              (if open-form?
+                  (treemacs-as-icon "- " 'face 'font-lock-string-face)
+                (treemacs-as-icon "+ " 'face 'font-lock-string-face))
+            ;; leaf node without an icon
+            (treemacs-as-icon " " 'face 'font-lock-string-face)))))))
+
+;; to support not showing icons at all.
+(defun lsp--metals-treeview-without-icons (metals-node)
+  "Display treeview without icons - use default +/- for expansion."
+  (if (ht-get metals-node "collapseState")
+      (treemacs-icon-metals-node-closed)
+    nil))
 
 (defun lsp--metals-treeview-exec-node-action (&rest _)
   "Execute the action associated with the treeview node."
@@ -445,15 +490,6 @@ LSP--METALS-TREEVIEW-GET-CHILDREN."
                                                        (json-encode response))))))))
 
 
-(treemacs-define-leaf-node metals-leaf
-  (treemacs-as-icon "• " 'face 'font-lock-builtin-face)
-  :ret-action #'lsp--metals-treeview-exec-node-action
-  :tab-action #'lsp--metals-treeview-exec-node-action
-  :mouse1-action (lambda (&rest args)
-                   (interactive)
-                   (lsp--metals-treeview-exec-node-action args)))
-
-
 (defun lsp--metals-on-node-collapsed (metals-node collapsed?)
   "Send metals/treeViewNodeCollapseDidChange to inform Metals
 that the node has been collapsed or expanded. METALS-NODE is a hash table
@@ -464,6 +500,38 @@ collapsed or expanded."
                                                       lsp--metals-view-id
                                                       (ht-get metals-node "nodeUri")
                                                       collapsed?))
+
+
+;;
+;; Icon theme for Metals treeview
+;;
+(treemacs-create-theme "Metals"
+  :icon-directory (f-join lsp--metals-treeview-dir lsp--metals-treeview-icon-dir)
+  :config
+  (progn
+    ;; root icon
+    (treemacs-create-icon :file "logo.png"        :extensions (root)       :fallback "")
+    
+    ;; symbol icons
+    (treemacs-create-icon :file "method.png"      :extensions ("method"))
+    (treemacs-create-icon :file "class.png"       :extensions ("class"))
+    (treemacs-create-icon :file "object.png"      :extensions ("object"))
+    (treemacs-create-icon :file "enum.png"        :extensions ("enum"))
+    (treemacs-create-icon :file "field.png"       :extensions ("field"))
+    (treemacs-create-icon :file "interface.png"   :extensions ("interface"))
+    (treemacs-create-icon :file "trait.png"       :extensions ("trait"))
+    (treemacs-create-icon :file "val.png"         :extensions ("val"))
+    (treemacs-create-icon :file "var.png"         :extensions ("var"))))
+
+(treemacs-define-leaf-node metals-leaf
+  ;;(lsp--metals-treeview-icon (treemacs-button-get (treemacs-node-at-point) :node))
+  (treemacs-get-icon-value 'root nil "Metals")
+  
+  :ret-action #'lsp--metals-treeview-exec-node-action
+  :tab-action #'lsp--metals-treeview-exec-node-action
+  :mouse1-action (lambda (&rest args)
+                   (interactive)
+                   (lsp--metals-treeview-exec-node-action args)))
 
 ;;
 ;; Expandable node definition in the treemacs tree.
@@ -476,8 +544,11 @@ collapsed or expanded."
 ;;
 
 (treemacs-define-expandable-node metals-node
-  :icon-open (treemacs-as-icon "- " 'face 'font-lock-string-face)
-  :icon-closed (treemacs-as-icon "+ " 'face 'font-lock-string-face)
+  ;; :icon-open (treemacs-as-icon "- " 'face 'font-lock-string-face)
+  ;; :icon-closed (treemacs-as-icon "+ " 'face 'font-lock-string-face)
+  :icon-open-form (lsp--metals-treeview-icon (treemacs-node-at-point) t)
+  :icon-closed-form (lsp--metals-treeview-icon (treemacs-node-at-point) nil)
+  
   :query-function (lsp--metals-treeview-get-children-current-node)
 
   :ret-action 'lsp--metals-treeview-exec-node-action
@@ -489,7 +560,7 @@ collapsed or expanded."
   
   :render-action
   (treemacs-render-node
-   :icon (lsp--metals-treeview-icon item)
+   :icon (lsp--metals-treeview-metals-node-icon item)
    :label-form (ht-get item "label")
    :state treemacs-metals-node-closed-state
    ;;:state (lsp--metals-treeview-state item)
@@ -505,8 +576,10 @@ collapsed or expanded."
 ;;
 
 (treemacs-define-expandable-node metals-root
-  :icon-open (treemacs-as-icon "- " 'face 'font-lock-string-face)
-  :icon-closed (treemacs-as-icon "+ " 'face 'font-lock-string-face)
+  ;; :icon-open (treemacs-as-icon "- " 'face 'font-lock-string-face)
+  ;; :icon-closed (treemacs-as-icon "+ " 'face 'font-lock-string-face)
+  :icon-open (treemacs-get-icon-value 'root nil "Metals")
+  :icon-closed (treemacs-get-icon-value 'root nil "Metals")
   :query-function (lsp--metals-treeview-get-children lsp--metals-view-id)
 
   ;; Ignore return action on root.
@@ -514,7 +587,7 @@ collapsed or expanded."
   
   :render-action
   (treemacs-render-node
-   :icon (lsp--metals-treeview-icon item)
+   :icon (lsp--metals-treeview-metals-node-icon item)
    :label-form (ht-get item "label")
    :state (lsp--metals-treeview-state item)
    :face 'font-lock-keyword-face
