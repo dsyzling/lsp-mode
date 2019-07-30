@@ -154,18 +154,24 @@ replaced with the treeviews."
 (defun lsp--metals-treeview-delete-window (&optional workspace)
   "Delete the metals treeview window associated with the WORKSPACE.
 If WORKSPACE is not provided the current treeview buffer local variable WORKSPACE
-will be used."
+will be used. This function is also called from an lsp hook which will be
+called when the workspace is shutdown - in this case we won't notify
+Metals of view being hidden."
   (interactive)
   (let ((cur-workspace (or workspace lsp--metals-treeview-current-workspace)))
     (-map (lambda (treeview-buffer)
             (switch-to-buffer treeview-buffer)
-            ;; Tell metals the view is no longer visible.
-            (when lsp--metals-view-id
+            ;; Tell metals the view is no longer visible but only if
+            ;; the workspace isn't in the process of shutting down or
+            ;; not initialised.
+            (when (and lsp--metals-view-id
+                       (not (equal 'initialized (lsp--workspace-status cur-workspace)))) 
               (lsp--metals-send-treeview-visibility-did-change lsp--metals-treeview-current-workspace
                                                                lsp--metals-view-id
                                                                nil))
             (kill-buffer treeview-buffer))
-          (lsp--metals-treeview-get-buffers cur-workspace))))
+          (lsp--metals-treeview-get-buffers cur-workspace))
+    (remove-hook 'lsp-after-uninitialized-hook #'lsp--metals-treeview-delete-window)))
 
 ;;
 ;; Minor mode for metals treeview window and keymap to control
@@ -262,8 +268,11 @@ relative to the others. "
             (kill-buffer buffer))
 
         (if select-treeview-window
-            (lsp--metals-treeview-select-window workspace)))
-    
+            (lsp--metals-treeview-select-window workspace))
+        
+        ;; Add hook to close our treeview when the workspace is shutdown.
+        (add-hook 'lsp-after-uninitialized-hook #'lsp--metals-treeview-delete-window))
+        
     ;; No views are available - show temp message.
     (lsp--metals-show-waiting-message workspace `((side . left) (slot . ,slot)))))
 
@@ -440,39 +449,37 @@ LSP--METALS-TREEVIEW-GET-CHILDREN."
       treemacs-metals-node-closed-state
     treemacs-metals-leaf-state))
 
-;; used for render children 
-(defun lsp--metals-treeview-metals-node-icon (metals-node)
-  "Return icon for Metals node - which is a hash table of elements."
+(defun lsp--metals-treeview-icon (metals-node open-form?)
+  "Return icon based on METALS-NODE past and if the node is expanding
+based on OPEN-FORM? being t. Check if icon matches one of our icons
+for the Metals theme and if not display a standard +/- if this is an
+expandable node. If the node isn't expandable for now do not show an icon. "
   (-if-let (icon (ht-get metals-node "icon"))
       (treemacs-get-icon-value icon nil "Metals")
     (if (ht-get metals-node "collapseState")
-        (treemacs-as-icon "+ " 'face 'font-lock-string-face)
+        (if open-form?
+            (treemacs-as-icon "- " 'face 'font-lock-string-face)
+          (treemacs-as-icon "+ " 'face 'font-lock-string-face))
       ;; leaf node without an icon
       (treemacs-as-icon " " 'face 'font-lock-string-face))))
 
-; expandable nodes - need to return dynamic open-form and close-form.
-(defun lsp--metals-treeview-icon (node open-form?)
-  "Return icon for Metals node - which is a hash table of elements."
-  ;; root node?
-  (if (and node (equal nil (treemacs-button-get node :parent)))
-      (treemacs-get-icon-value 'root nil "Metals")
-    (progn
-      (let ((metals-node (treemacs-button-get node :node)))
-        (-if-let (icon (ht-get metals-node "icon"))
-            (treemacs-get-icon-value icon nil "Metals")
-          (if (ht-get metals-node "collapseState")
-              (if open-form?
-                  (treemacs-as-icon "- " 'face 'font-lock-string-face)
-                (treemacs-as-icon "+ " 'face 'font-lock-string-face))
-            ;; leaf node without an icon
-            (treemacs-as-icon " " 'face 'font-lock-string-face)))))))
+;; to support not showing icons at all - leave for debugging for now
+;; (defun lsp--metals-treeview-without-icons (metals-node)
+;;   "Display treeview without icons - use default +/- for expansion."
+;;   (if (ht-get metals-node "collapseState")
+;;       (treemacs-icon-metals-node-closed)
+;;     nil))
 
-;; to support not showing icons at all.
-(defun lsp--metals-treeview-without-icons (metals-node)
-  "Display treeview without icons - use default +/- for expansion."
-  (if (ht-get metals-node "collapseState")
-      (treemacs-icon-metals-node-closed)
-    nil))
+(defun lsp--metals-treeview-send-execute-command (command &optional args)
+  "Create and send a 'workspace/executeCommand' message having command COMMAND and optional ARGS.
+Send the command asynchronously rather than the default lsp-mode of synchronous."
+  ;; Current lsp-send-execute-command is synchronous - use our own async call.
+  (lsp-request-async "workspace/executeCommand"
+                     (list :command command
+                           :arguments args)
+                     (lambda (response)
+                       (lsp--metals-treeview-log "reply from workspace/executeCommand:\n%s"
+                                                 (json-encode response)))))
 
 (defun lsp--metals-treeview-exec-node-action (&rest _)
   "Execute the action associated with the treeview node."
@@ -480,15 +487,11 @@ LSP--METALS-TREEVIEW-GET-CHILDREN."
          (command (ht-get node "command")))
     (when command
       (with-lsp-workspace lsp--metals-treeview-current-workspace
-        ;; Current lsp-send-execute-command is synchronous,
-        ;; use our own async call.
-        (lsp-request-async "workspace/executeCommand"
-                           (list :command (string-remove-prefix "metals."(ht-get command "command"))
-                                 :arguments (ht-get command "arguments"))
-                           (lambda (response)
-                             (lsp--metals-treeview-log "reply from workspace/executeCommand:\n%s"
-                                                       (json-encode response))))))))
-
+        ;; Seems to be an inconsistency in metals commands defined within the tree.
+        ;; some have metals. prefix others do not. See:
+        ;;  https://github.com/scalameta/metals/issues/838
+        (lsp--metals-treeview-send-execute-command (string-remove-prefix "metals." (ht-get command "command"))
+                                                   (ht-get command "arguments"))))))
 
 (defun lsp--metals-on-node-collapsed (metals-node collapsed?)
   "Send metals/treeViewNodeCollapseDidChange to inform Metals
@@ -504,6 +507,10 @@ collapsed or expanded."
 
 ;;
 ;; Icon theme for Metals treeview
+;; Icons taken from vs code Metals code - although Metals draws letters on
+;; the icons to indicate Class (C), method(M) etc. Would be nice to redesign
+;; these in the future.
+;;   https://github.com/scalameta/metals-vscode/tree/master/icons
 ;;
 (treemacs-create-theme "Metals"
   :icon-directory (f-join lsp--metals-treeview-dir lsp--metals-treeview-icon-dir)
@@ -524,7 +531,6 @@ collapsed or expanded."
     (treemacs-create-icon :file "var.png"         :extensions ("var"))))
 
 (treemacs-define-leaf-node metals-leaf
-  ;;(lsp--metals-treeview-icon (treemacs-button-get (treemacs-node-at-point) :node))
   (treemacs-get-icon-value 'root nil "Metals")
   
   :ret-action #'lsp--metals-treeview-exec-node-action
@@ -546,8 +552,11 @@ collapsed or expanded."
 (treemacs-define-expandable-node metals-node
   ;; :icon-open (treemacs-as-icon "- " 'face 'font-lock-string-face)
   ;; :icon-closed (treemacs-as-icon "+ " 'face 'font-lock-string-face)
-  :icon-open-form (lsp--metals-treeview-icon (treemacs-node-at-point) t)
-  :icon-closed-form (lsp--metals-treeview-icon (treemacs-node-at-point) nil)
+  
+  :icon-open-form (lsp--metals-treeview-icon
+                   (treemacs-button-get (treemacs-node-at-point) :node) t)
+  :icon-closed-form (lsp--metals-treeview-icon
+                     (treemacs-button-get (treemacs-node-at-point) :node) nil)
   
   :query-function (lsp--metals-treeview-get-children-current-node)
 
@@ -560,7 +569,7 @@ collapsed or expanded."
   
   :render-action
   (treemacs-render-node
-   :icon (lsp--metals-treeview-metals-node-icon item)
+   :icon (lsp--metals-treeview-icon item nil)
    :label-form (ht-get item "label")
    :state treemacs-metals-node-closed-state
    ;;:state (lsp--metals-treeview-state item)
@@ -587,7 +596,7 @@ collapsed or expanded."
   
   :render-action
   (treemacs-render-node
-   :icon (lsp--metals-treeview-metals-node-icon item)
+   :icon (lsp--metals-treeview-icon item nil)
    :label-form (ht-get item "label")
    :state (lsp--metals-treeview-state item)
    :face 'font-lock-keyword-face
@@ -597,6 +606,13 @@ collapsed or expanded."
   :root-label (lsp--metals-view-name lsp--metals-view-id)
   :root-face 'font-lock-type-face
   :root-key-form lsp--metals-treeview-root-key)
+
+(defun lsp-metals-treeview-reveal ()
+  (interactive)
+  (let (workspace (car (lsp-workspaces)))
+    (lsp-log "response from treeViewReveal %s"
+             (json-encode
+              (lsp-request "metals/treeViewReveal" (lsp--text-document-position-params))))))
 
 (defun lsp-metals-treeview (&optional workspace)
   "Display the Metals treeview window for the WORKSPACE (optional).  If
