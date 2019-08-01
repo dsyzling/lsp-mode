@@ -93,6 +93,14 @@ relative to lsp-mode")
       (expand-file-name))
   "The directory lsp-metals-treeview.el is stored in.")
 
+;;
+;; Treemacs doesn't support a unique key - :-key-form isn't actually defined as
+;; being unique and you cannot search by this key - only by path. Since Metals
+;; sends us nodeUri unique keys we need someway of mapping nodeUris to
+;; treemacs paths - so we can use treemacs-find-node.
+;;
+(defvar-local lsp--metals-treemacs-node-index (make-hash-table :test 'equal))
+
 
 (defun lsp--metals-treeview-log (format &rest args)
   "Log treeview tracing/debug messages to the lsp-log"
@@ -299,13 +307,6 @@ us a new set of views."
                                      (and state (lsp--metals-treeview-data-views state))
                                      0))))
 
-;;
-;; Treemacs doesn't support a unique key - :-key-form isn't actually defined as
-;; being unique and you cannot search by this key - only by path. Since Metals
-;; sends us nodeUri unique keys we need someway of mapping nodeUris to
-;; treemacs paths - so we can use treemacs-find-node.
-;;
-(defvar-local lsp--metals-treemacs-node-index (make-hash-table :test 'equal))
 
 (defun lsp--metals-treeview-cache-add-nodes (metals-nodes current-treemacs-node)
   "Build an index of treemacs nodes nodeUri -> treemacs path. We can use this
@@ -398,7 +399,8 @@ value VISIBLE - t or nil."
     (with-lsp-workspace workspace
         (lsp-request-async "metals/treeViewVisibilityDidChange" params
                            (lambda (response)
-                             (lsp--metals-treeview-log (json-encode response)))))))
+                             (lsp--metals-treeview-log (json-encode response)))
+                           :mode 'detached))))
 
 (defun lsp--metals-send-treeview-node-collapse-did-change (workspace view-id node-uri collapsed?)
   "Send metals/treeViewNodeCollapseDidChange to inform Metals when a
@@ -503,7 +505,6 @@ collapsed or expanded."
                                                       lsp--metals-view-id
                                                       (ht-get metals-node "nodeUri")
                                                       collapsed?))
-
 
 ;;
 ;; Icon theme for Metals treeview
