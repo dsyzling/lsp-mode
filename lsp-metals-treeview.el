@@ -320,9 +320,15 @@ to find nodes within the tree based on nodeUri which Metals will send us."
           metals-nodes)))
 
 (defun lsp--metals-treeview-find-node (node-uri)
-  "Find treemacs node based on node-uri via our local index."
+  "Find treemacs node based on node-uri via our local index. If the node
+cannot be found in the tree make sure we cleanup the cache and remove it."
   (when-let ((path (ht-get lsp--metals-treemacs-node-index node-uri)))
-    (treemacs-find-node path)))
+    (-if-let (found-node (treemacs-find-node path))
+        found-node
+      (progn
+        ;; Otherwise remove node form cache it's no longer in the tree.
+        (ht-remove lsp--metals-treemacs-node-index node-uri)
+        nil))))
 
 (defun lsp--metals-treeview-update-node (workspace node)
   (lsp--metals-treeview-log "in lsp--metals-treeview-update-node %s" (ht-get node "nodeUri"))
@@ -421,7 +427,6 @@ collapsed or expanded based on the boolean COLLAPSED? either t or nil."
                                                      (json-encode response)))
                          :mode 'detached))))
 
-
 (defun lsp--metals-treeview-get-children (view-id &optional node-uri)
   "Retrieve children of the view given by the VIEW-ID and optionally children
 of the node given by the NODE-URI.  Without a NODE-URI the top level child items
@@ -429,19 +434,21 @@ will be returned for the view. Returns a list of nodes with values converted
 from json to hash tables."
   (with-lsp-workspace lsp--metals-treeview-current-workspace
     ;; return nodes element and convert from vector to list.
-    (let ((children (append (ht-get (lsp--metals-send-treeview-children view-id node-uri) "nodes")
-                            nil)))
-      (lsp--metals-treeview-log "Children returned:\n%s " (json-encode children))
-      
-      (lsp--metals-treeview-cache-add-nodes children (treemacs-node-at-point))
+    (let* ((current-tree-node (treemacs-node-at-point))
+           (children (append (ht-get (lsp--metals-send-treeview-children view-id node-uri) "nodes") nil)))
+      (lsp--metals-treeview-log "Children returned:\n%s" (json-encode children))
+      (if (and (-non-nil children) current-tree-node)
+          (lsp--metals-treeview-cache-add-nodes children current-tree-node))
       children)))
 
 (defun lsp--metals-treeview-get-children-current-node (&rest _)
   "Retrieve children of the currently selected node in the treeview - see
 LSP--METALS-TREEVIEW-GET-CHILDREN."
-  (let ((metals-node (treemacs-button-get (treemacs-node-at-point) :node)))
-    (lsp--metals-treeview-get-children (ht-get metals-node "viewId")
-                                       (ht-get metals-node "nodeUri"))))
+  (-if-let (tree-node (treemacs-node-at-point))
+      (if-let (metals-node (treemacs-button-get tree-node :node))
+          (lsp--metals-treeview-get-children (ht-get metals-node "viewId")
+                                             (ht-get metals-node "nodeUri"))
+        )))
 ;;
 ;; UI tree view using treemacs
 ;;
