@@ -481,7 +481,8 @@ Send the command asynchronously rather than the default lsp-mode of synchronous.
                            :arguments args)
                      (lambda (response)
                        (lsp--metals-treeview-log "reply from workspace/executeCommand:\n%s"
-                                                 (json-encode response)))))
+                                                 (json-encode response)))
+                     :mode 'detached))
 
 (defun lsp--metals-treeview-exec-node-action (&rest _)
   "Execute the action associated with the treeview node."
@@ -531,6 +532,10 @@ collapsed or expanded."
     (treemacs-create-icon :file "val.png"         :extensions ("val"))
     (treemacs-create-icon :file "var.png"         :extensions ("var"))))
 
+;;
+;; We can possibly remove the leaf node definition and
+;; replace lsp--metals-treeview-state to return treemacs-metals-node-closed-state
+;;
 (treemacs-define-leaf-node metals-leaf
   (treemacs-get-icon-value 'root nil "Metals")
   
