@@ -51,12 +51,15 @@
 (require 'treemacs)
 
 (defcustom lsp-metals-treeview-enable t
-  "Enable Metals treeview extension - send capability to Metals to indicate we want treeview messages."
+  "Enable Metals treeview extension - send capability to Metals to
+indicate we want treeview messages."
   :group 'lsp-metals-treeview
   :type 'boolean)
 
 (defcustom lsp-metals-treeview-show-when-views-received t
-  "Automatically show the treeview when Metals sends us the list of views (compile/build). Otherwise if nil the user will have to execute lsp-metals-treeview to display the treeview explicitly."
+  "Automatically show the treeview when Metals sends us the list of
+views (compile/build). Otherwise if nil the user will have to execute
+lsp-metals-treeview to display the treeview explicitly."
   :group 'lsp-metals-treeview
   :type 'boolean)
 
@@ -159,12 +162,13 @@ replaced with the treeviews."
   (-any (lambda (buffer) (buffer-live-p buffer))
         (lsp--metals-treeview-get-buffers workspace)))
 
-(defun lsp--metals-treeview-delete-window (&optional workspace)
+(defun lsp--metals-treeview-delete-window (&optional workspace workspace-shutdown?)
   "Delete the metals treeview window associated with the WORKSPACE.
-If WORKSPACE is not provided the current treeview buffer local variable WORKSPACE
-will be used. This function is also called from an lsp hook which will be
-called when the workspace is shutdown - in this case we won't notify
-Metals of view being hidden."
+If WORKSPACE is not provided the current treeview buffer local variable
+WORKSPACE will be used. This function is also called from an lsp hook
+which will be called when the workspace is shutdown - in this case we
+won't notify Metals of view being hidden if WORKSPACE-SHUTDOWN? is
+t."
   (interactive)
   (let ((cur-workspace (or workspace lsp--metals-treeview-current-workspace)))
     (-map (lambda (treeview-buffer)
@@ -173,13 +177,23 @@ Metals of view being hidden."
             ;; the workspace isn't in the process of shutting down or
             ;; not initialised.
             (when (and lsp--metals-view-id
-                       (not (equal 'initialized (lsp--workspace-status cur-workspace)))) 
-              (lsp--metals-send-treeview-visibility-did-change lsp--metals-treeview-current-workspace
-                                                               lsp--metals-view-id
-                                                               nil))
+                       (not workspace-shutdown?)
+                       (equal 'initialized (lsp--workspace-status cur-workspace))) 
+              (lsp--metals-send-treeview-visibility-did-change
+               lsp--metals-treeview-current-workspace
+               lsp--metals-view-id
+               nil))
             (kill-buffer treeview-buffer))
           (lsp--metals-treeview-get-buffers cur-workspace))
     (remove-hook 'lsp-after-uninitialized-hook #'lsp--metals-treeview-delete-window)))
+
+(defun lsp--metals-treeview-on-workspace-shutdown (workspace)
+  "Handler for lsp workspace shutdown, ensure we close our
+treeview windows/buffers. Under this scenario we shouldn't contact Metals
+to update view visibility status, so we pass through workspace-shutdown
+true so that the delete-window function has the context of the window
+closing."
+  (lsp--metals-treeview-delete-window workspace t))
 
 ;;
 ;; Minor mode for metals treeview window and keymap to control
@@ -279,7 +293,7 @@ relative to the others. "
             (lsp--metals-treeview-select-window workspace))
         
         ;; Add hook to close our treeview when the workspace is shutdown.
-        (add-hook 'lsp-after-uninitialized-hook #'lsp--metals-treeview-delete-window))
+        (add-hook 'lsp-after-uninitialized-hook #'lsp--metals-treeview-on-workspace-shutdown))
         
     ;; No views are available - show temp message.
     (lsp--metals-show-waiting-message workspace `((side . left) (slot . ,slot)))))
