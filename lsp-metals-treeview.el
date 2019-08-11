@@ -69,7 +69,8 @@ lsp-metals-treeview to display the treeview explicitly."
   :type 'boolean)
 
 (cl-defstruct lsp--metals-treeview-data
-  (views nil))
+  (views nil)
+  (buffers nil))
 
 (defvar-local lsp--metals-treeview-current-workspace nil
   "Associate lsp workspace with the metals treeview buffer so we can
@@ -87,6 +88,10 @@ invoke async calls to the lsp server.")
   "Directory containing Metals treeview icon theme -
 relative to lsp-mode")
 
+(defconst lsp--metals-treeview-buffer-prefix " *Metals"
+  "Prefix for all Metals treeview buffers, note the space prefix
+which hides the buffers within the buffer list in Emacs.")
+
 ;; Root directory of our lisp files so that we can find icons
 ;; relative to installation.
 (defconst lsp--metals-treeview-dir
@@ -96,6 +101,8 @@ relative to lsp-mode")
       (expand-file-name))
   "The directory lsp-metals-treeview.el is stored in.")
 
+(defconst lsp--metals-treeview-metadata-key "metals-treeview"
+  "Metadata key to store treeview data struct within workspace")
 ;;
 ;; Treemacs doesn't support a unique key - :-key-form isn't actually defined as
 ;; being unique and you cannot search by this key - only by path. Since Metals
@@ -111,10 +118,39 @@ relative to lsp-mode")
     (apply #'lsp-log format args)))
 
 (defun lsp--metals-treeview-get-data (workspace)
-  (ht-get (lsp--workspace-metadata workspace) "metals-treeview"))
+  "Return metals treeview state data associated with
+the WORKSPACE."
+  (ht-get (lsp--workspace-metadata workspace) lsp--metals-treeview-metadata-key))
 
 (defun lsp--metals-treeview-set-data (workspace data)
-  (ht-set (lsp--workspace-metadata workspace) "metals-treeview" data))
+  "Set metals treeview state data for the WORKSPACE"
+  (ht-set (lsp--workspace-metadata workspace) lsp--metals-treeview-metadata-key data))
+
+(defun lsp--metals-treeview-add-buffer (workspace buffer)
+  "Add the BUFFER to the list of treeview buffers associated with
+the WORKSPACE."
+  (-if-let* ((state (lsp--metals-treeview-get-data workspace))
+             (buffers (append (lsp--metals-treeview-data-buffers state) (list buffer))))
+    (setf (lsp--metals-treeview-data-buffers state) buffers)))
+
+(defun lsp--metals-treeview-remove-buffers (workspace)
+  "Clear the buffers stored within treeview state data in
+the WORKSPACE."
+  (-if-let ((treeview-data (lsp--metals-treeview-get-data workspace)))
+      (setf (lsp--metals-treeview-data-buffers treeview-data) nil)))
+
+(defun lsp--metals-treeview-get-buffers (workspace)
+  "Return buffers associated with treeview from the WORKSPACE
+treeview data"
+  (-if-let (state (lsp--metals-treeview-get-data workspace))
+      (lsp--metals-treeview-data-buffers state)))
+
+(defun lsp--metals-get-treeview-buffer-names (workspace)
+  "Return the treeview buffer names associated with this WORKSPACE."
+  (-if-let (view-data (lsp--metals-treeview-get-data workspace))
+      (-map (lambda (view)
+              (lsp--metals-treeview-buffer-name workspace (alist-get :view-id view)))
+            (lsp--metals-treeview-data-views view-data))))
 
 (defun lsp--metals-view-name (view-id)
   "Return a view name from the VIEW-ID."
@@ -131,7 +167,8 @@ relative to lsp-mode")
 
 (defun lsp--metals-treeview-buffer-name (workspace view-id)
   "Return buffer name of the treeview from WORKSPACE and VIEW-ID."
-  (format "*Metals %s %s*"
+  (format "%s %s %s*"
+          lsp--metals-treeview-buffer-prefix
           (lsp--metals-view-name view-id)
           (file-name-nondirectory
            (directory-file-name (lsp--workspace-root workspace)))))
@@ -141,26 +178,79 @@ relative to lsp-mode")
 informing the user that Metals has not sent any treeview information for
 this WORKSPACE.  When the views arrive this buffer will be removed and
 replaced with the treeviews."
-  (format "*Metals %s*" (file-name-nondirectory
-                         (directory-file-name (lsp--workspace-root workspace)))))
+  (format "%s %s*"
+          lsp--metals-treeview-buffer-prefix
+          (file-name-nondirectory
+           (directory-file-name (lsp--workspace-root workspace)))))
 
-(defun lsp--metals-get-treeview-buffer-names (workspace)
-  "Return the treeview buffer names associated with this WORKSPACE."
-  (let* ((view-data (lsp--metals-treeview-get-data workspace))
-         (views (lsp--metals-treeview-data-views view-data)))
-    (-map (lambda (view)
-            (lsp--metals-treeview-buffer-name workspace (alist-get :view-id view)))
-          views)))
+(defun lsp--metals-treeview-hide-window (&optional workspace)
+  "Hide the Metals treeview window associated with the WORKSPACE.
+The window will be deleted but the treeview buffers will still
+be live in the background."
+  (interactive)
+  (-if-let (cur-workspace (or workspace lsp--metals-treeview-current-workspace))
+      (-map (lambda (buffer)
+              ;; Notify Metals that visibility of the view has changed
+              (with-current-buffer buffer
+                (lsp--metals-send-treeview-visibility-did-change
+                 cur-workspace lsp--metals-view-id nil))
+              (delete-window (get-buffer-window buffer)))
+            (lsp--metals-treeview-get-buffers cur-workspace))))
 
-(defun lsp--metals-treeview-get-buffers (workspace)
-  "Return buffers for the metals treeview associated with the WORKSPACE."
-  (-map (lambda (name) (get-buffer name))
-        (lsp--metals-get-treeview-buffer-names workspace)))
+(defun lsp--metals-treeview-get-visible-buffers ()
+  "Retrieve buffers associated with the current selected
+frame. Check to see if any of these buffers are metals
+treeview buffers and if so return the buffers."
+  ;; retrieve any treeview buffers that are visible
+  (->> (window-list (selected-frame))
+       (-map (lambda (window)
+               (let ((buffer (window-buffer window)))
+                 (when (s-starts-with? lsp--metals-treeview-buffer-prefix
+                                       (buffer-name buffer))
+                   buffer))))
+       (remove nil)))
 
 (defun lsp--metals-treeview-visible? (workspace)
-  "Is the Metals treeview (or any of its buffers) visible in this WORKSPACE?"
-  (-any (lambda (buffer) (buffer-live-p buffer))
-        (lsp--metals-treeview-get-buffers workspace)))
+  "Is the metals treeview associated with the WORKSPACE currently visible?"
+  (-if-let* ((visible-buffers (lsp--metals-treeview-get-visible-buffers))
+             (workspace-buffers (lsp--metals-treeview-get-buffers workspace)))
+    (equal visible-buffers workspace-buffers)))
+
+(defun lsp--metals-treeview-exists? (workspace)
+  "Does a Metals Treeview exist for the WORKSPACE, the treeview
+may not be visible but still exists in the background."
+  (-if-let ((buffers (lsp--metals-treeview-get-buffers workspace)))
+    (-all-p 'buffer-live-p buffers)))
+
+(defun lsp--metals-treeview-hidden? (workspace)
+  "Does the metals treeview associated with WORKSPACE exist
+but not visible?"
+  (and (lsp--metals-treeview-exists? workspace)
+       (not lsp--metals-treeview-visible? workspace)))
+
+(defun lsp--metals-treeview-get-visibility (workspace)
+  "Return visibility status of metals treeview associated
+with WORKSPACE. Return 'visible, 'hidden, 'none depending on state of
+treeview."
+  (if (lsp--metals-treeview-visible? workspace)
+      'visible
+    (if (lsp--metals-treeview-exists? workspace)
+        'hidden
+      'none)))
+
+(defun lsp--metals-treeview-show-window (workspace &optional select-window?)
+  "Show metals treeview window associated with WORKSPACE and
+optionally select the window based on the boolean SELECT-WINDOW?
+If the treeview window is hidden or not visible (not created)
+then show the window."
+  (let* ((visibility (lsp--metals-treeview-get-visibility workspace))
+         (view-data (lsp--metals-treeview-get-data workspace))
+         (views (if view-data
+                    (lsp--metals-treeview-data-views view-data)
+                  nil)))
+    (if (or (eq 'hidden visibility) (eq 'none visibility))
+        (lsp--metals-show-metals-views workspace
+                                       views 0 select-window?))))
 
 (defun lsp--metals-treeview-delete-window (&optional workspace workspace-shutdown?)
   "Delete the metals treeview window associated with the WORKSPACE.
@@ -169,7 +259,6 @@ WORKSPACE will be used. This function is also called from an lsp hook
 which will be called when the workspace is shutdown - in this case we
 won't notify Metals of view being hidden if WORKSPACE-SHUTDOWN? is
 t."
-  (interactive)
   (let ((cur-workspace (or workspace lsp--metals-treeview-current-workspace)))
     (-map (lambda (treeview-buffer)
             (switch-to-buffer treeview-buffer)
@@ -185,6 +274,7 @@ t."
                nil))
             (kill-buffer treeview-buffer))
           (lsp--metals-treeview-get-buffers cur-workspace))
+    (lsp--metals-treeview-remove-buffers cur-workspace)
     (remove-hook 'lsp-after-uninitialized-hook #'lsp--metals-treeview-delete-window)))
 
 (defun lsp--metals-treeview-on-workspace-shutdown (workspace)
@@ -202,7 +292,7 @@ closing."
 
 (defvar lsp-metals-treeview-mode-map
   (let ((m (make-sparse-keymap)))
-    (define-key m (kbd "q") #'lsp--metals-treeview-delete-window)
+    (define-key m (kbd "q") #'lsp--metals-treeview-hide-window)
     m)
   "Keymap for `lsp-metals-treeview-mode'.")
 
@@ -225,14 +315,16 @@ window by POSITION and is of the form '((side left))."
         (with-selected-window (display-buffer-in-side-window buffer position)
           ;; update the root of the tree with the view.
           (lsp--metals-treeview-log "Refreshing tree %s" view-id)
-          (treemacs-update-node `(:custom ,lsp--metals-treeview-root-key) t))
+          (treemacs-update-node `(:custom ,lsp--metals-treeview-root-key) t)
+          (set-window-dedicated-p (selected-window) t)
+          ;; When closing other windows after splitting, prevent our treeview closing.
+          (set-window-parameter (selected-window) 'no-delete-other-windows t))
           
       (let* ((buffer (get-buffer-create buffer-name))
              (window (display-buffer-in-side-window buffer position)))
 
         (with-lsp-workspace workspace
           (with-selected-window window
-            ;;(select-window window)
             (set-window-dedicated-p window t)
             (treemacs-initialize)
             
@@ -240,11 +332,16 @@ window by POSITION and is of the form '((side left))."
             (setq-local lsp--metals-view-id view-id)
             (treemacs-METALS-ROOT-extension)
             (setq-local mode-line-format (lsp--metals-view-name view-id))
+            
+            ;; Add buffer to list of treeview buffers associated with this workspace.
+            (lsp--metals-treeview-add-buffer workspace buffer)
+            
             ;; When closing other windows after splitting, prevent our treeview closing.
             (set-window-parameter window 'no-delete-other-windows t)
             (lsp-metals-treeview-mode 1)
             ;; open root of tree after initialisation.
             (treemacs-expand-metals-root)))))))
+
 
 (defun lsp--metals-get-waiting-message-buffer (workspace)
   (get-buffer (lsp--metals-treeview-waiting-message-buffer-name workspace)))
@@ -303,6 +400,12 @@ relative to the others. "
 us a new set of views."
   (lsp--metals-treeview-log "Received metals views for workspace %s"
                             (lsp--workspace-root workspace))
+  
+  ;; Close any current treeview window for this workspace, so we can
+  ;; recreate it.
+  (when (lsp--metals-treeview-exists? workspace)
+    (lsp--metals-treeview-delete-window workspace))
+  
   (let ((state (make-lsp--metals-treeview-data
                 :views (mapcar
                         (lambda (node)
@@ -315,8 +418,10 @@ us a new set of views."
     (lsp--metals-treeview-set-data workspace state)
 
     ;; Update views if treeview enabled or the user has decided to show the treeview
+    ;; The treeview may not be visible at this stage but we will still update it
+    ;; if we receive this message.
     (when (or lsp-metals-treeview-show-when-views-received
-              (lsp--metals-treeview-visible? workspace))
+              (lsp--metals-treeview-exists? workspace))
       (lsp--metals-show-metals-views workspace
                                      (and state (lsp--metals-treeview-data-views state))
                                      0))))
@@ -647,9 +752,7 @@ WORKSPACE is not specified obtain the current workspace for the file in
 the current buffer."
   (interactive)
   (-if-let* ((workspace (or workspace (car (lsp-workspaces)))))
-      (let* ((view-state (lsp--metals-treeview-get-data workspace))
-             (views (and view-state (lsp--metals-treeview-data-views view-state))))
-        (lsp--metals-show-metals-views workspace views 0 t))
+      (lsp--metals-treeview-show-window workspace t)
     (message "Current buffer is not within Metals workspace")))
 
 
