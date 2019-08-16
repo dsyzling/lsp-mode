@@ -111,6 +111,30 @@ which hides the buffers within the buffer list in Emacs.")
 ;;
 (defvar-local lsp--metals-treemacs-node-index (make-hash-table :test 'equal))
 
+(defvar lsp--metals-treeview-active-view-workspace nil
+  "When the treeview is displayed and visible this variable
+will hold the workspace associated with the instance.")
+
+(defun lsp--metals-treeview-buffer-changed ()
+  "When the buffer is switched check to see if a treeview
+is currently being displayed and whether we need to show
+an alternative workspace's treeview."
+  (with-current-buffer (current-buffer)
+    (-if-let ((workspaces (lsp-workspaces)))
+        (progn
+          (lsp-log "we have workspaces")
+          (when (and lsp--metals-treeview-active-view-workspace
+                     (not (member lsp--metals-treeview-active-view-workspace
+                                  workspaces)))
+            ;; hide current treeview
+            (lsp--metals-treeview-hide-window lsp--metals-treeview-active-view-workspace)
+            (lsp--metals-treeview-show-window (car workspaces)))))
+    (lsp-log "no workspaces")))
+
+;; (defun lsp--metals-test-add-buffer-switch-hook ()
+;;   (interactive)
+;;   (add-hook 'buffer-list-update-hook #'lsp--metals-treeview-buffer-changed))
+
 
 (defun lsp--metals-treeview-log (format &rest args)
   "Log treeview tracing/debug messages to the lsp-log"
@@ -189,13 +213,15 @@ The window will be deleted but the treeview buffers will still
 be live in the background."
   (interactive)
   (-if-let (cur-workspace (or workspace lsp--metals-treeview-current-workspace))
-      (-map (lambda (buffer)
-              ;; Notify Metals that visibility of the view has changed
-              (with-current-buffer buffer
-                (lsp--metals-send-treeview-visibility-did-change
-                 cur-workspace lsp--metals-view-id nil))
-              (delete-window (get-buffer-window buffer)))
-            (lsp--metals-treeview-get-buffers cur-workspace))))
+      (progn
+        (-map (lambda (buffer)
+                ;; Notify Metals that visibility of the view has changed
+                (with-current-buffer buffer
+                  (lsp--metals-send-treeview-visibility-did-change
+                   cur-workspace lsp--metals-view-id nil))
+                (delete-window (get-buffer-window buffer)))
+              (lsp--metals-treeview-get-buffers cur-workspace))
+        (setq lsp--metals-treeview-active-view-workspace nil))))
 
 (defun lsp--metals-treeview-get-visible-buffers ()
   "Retrieve buffers associated with the current selected
@@ -275,6 +301,7 @@ t."
             (kill-buffer treeview-buffer))
           (lsp--metals-treeview-get-buffers cur-workspace))
     (lsp--metals-treeview-remove-buffers cur-workspace)
+    (setq lsp--metals-treeview-active-view-workspace nil)
     (remove-hook 'lsp-after-uninitialized-hook #'lsp--metals-treeview-delete-window)))
 
 (defun lsp--metals-treeview-on-workspace-shutdown (workspace)
@@ -388,6 +415,8 @@ relative to the others. "
 
         (if select-treeview-window
             (lsp--metals-treeview-select-window workspace))
+
+        (setq lsp--metals-treeview-active-view-workspace workspace)
         
         ;; Add hook to close our treeview when the workspace is shutdown.
         (add-hook 'lsp-after-uninitialized-hook #'lsp--metals-treeview-on-workspace-shutdown))
